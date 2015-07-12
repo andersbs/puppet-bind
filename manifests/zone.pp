@@ -3,6 +3,8 @@
 define bind::zone (
     $zone_type,
     $domain          = '',
+    $domain_file     = '',
+    $manage_file     = true,
     $dynamic         = true,
     $masters         = '',
     $transfer_source = '',
@@ -11,7 +13,7 @@ define bind::zone (
     $allow_transfers = '',
     $dnssec          = false,
     $key_directory   = '',
-    $ns_notify       = true,
+    $ns_notify       = 'yes',
     $also_notify     = '',
     $allow_notify    = '',
     $forwarders      = '',
@@ -23,6 +25,7 @@ define bind::zone (
     $cachedir = $::bind::cachedir
     $random_device = $::bind::random_device
     $_domain = pick($domain, $name)
+    $_domain_file = pick($domain_file, "${cachedir}/${name}/${_domain}")
 
     unless !($masters != '' and ! member(['slave', 'stub'], $zone_type)) {
         fail("masters may only be provided for bind::zone resources with zone_type 'slave' or 'stub'")
@@ -38,6 +41,10 @@ define bind::zone (
 
     unless !($dnssec and ! $dynamic) {
         fail("dnssec may only be true for bind::zone resources with dynamic set to true")
+    }
+
+    unless !($dnssec and ! $manage_file) {
+        fail("dnssec may only be true for bind::zone resources with manage_file set to true")
     }
 
     unless !($key_directory != '' and ! $dnssec) {
@@ -60,6 +67,10 @@ define bind::zone (
         fail("source may only be provided for bind::zone resources with zone_type 'master' or 'hint'")
     }
 
+    unless member(['yes', 'no', 'explicit'], $ns_notify) {
+        fail("ns_notify must be yes, no or explicit")
+    }
+
     $zone_file_mode = $zone_type ? {
         'master' => $dynamic ? {
             true  => 'init',
@@ -71,61 +82,63 @@ define bind::zone (
         default  => 'absent',
     }
 
-    if member(['init', 'managed', 'allowed'], $zone_file_mode) {
-        file { "${cachedir}/${name}":
-            ensure  => directory,
-            owner   => $::bind::params::bind_user,
-            group   => $::bind::params::bind_group,
-            mode    => '0755',
-            require => Package['bind'],
-        }
-
-        if member(['init', 'managed'], $zone_file_mode) {
-            file { "${cachedir}/${name}/${_domain}":
-                ensure  => present,
+    if $manage_file {
+        if member(['init', 'managed', 'allowed'], $zone_file_mode) {
+            file { "${cachedir}/${name}":
+                ensure  => directory,
                 owner   => $::bind::params::bind_user,
                 group   => $::bind::params::bind_group,
-                mode    => '0644',
-                replace => ($zone_file_mode == 'managed'),
-                source  => pick($source, 'puppet:///modules/bind/db.empty'),
-                audit   => [ content ],
+                mode    => '0755',
+                require => Package['bind'],
+            }
+
+            if member(['init', 'managed'], $zone_file_mode) {
+                file { $_domain_file:
+                    ensure  => present,
+                    owner   => $::bind::params::bind_user,
+                    group   => $::bind::params::bind_group,
+                    mode    => '0644',
+                    replace => ($zone_file_mode == 'managed'),
+                    source  => pick($source, 'puppet:///modules/bind/db.empty'),
+                    audit   => [ content ],
+                }
+            }
+
+            if $zone_file_mode == 'managed' {
+                exec { "rndc reload ${_domain}":
+                    command     => "/usr/sbin/rndc reload ${_domain}",
+                    user        => $::bind::params::bind_user,
+                    refreshonly => true,
+                    require     => Service['bind'],
+                    subscribe   => File["${cachedir}/${name}/${_domain}"],
+                }
+            }
+        } elsif $zone_file_mode == 'absent' {
+            file { "${cachedir}/${name}":
+                ensure => absent,
             }
         }
 
-        if $zone_file_mode == 'managed' {
-            exec { "rndc reload ${_domain}":
-                command     => "/usr/sbin/rndc reload ${_domain}",
-                user        => $::bind::params::bind_user,
-                refreshonly => true,
-                require     => Service['bind'],
-                subscribe   => File["${cachedir}/${name}/${_domain}"],
+        if $dnssec {
+            exec { "dnssec-keygen-${name}":
+                command => "/usr/local/bin/dnssec-init '${cachedir}' '${name}'\
+                    '${_domain}' '${key_directory}' '${random_device}'",
+                cwd     => $cachedir,
+                user    => $::bind::params::bind_user,
+                creates => "${cachedir}/${name}/${_domain}.signed",
+                timeout => 0, # crypto is hard
+                require => [
+                    File['/usr/local/bin/dnssec-init'],
+                    File["${cachedir}/${name}/${_domain}"]
+                ],
             }
-        }
-    } elsif $zone_file_mode == 'absent' {
-        file { "${cachedir}/${name}":
-            ensure => absent,
-        }
-    }
 
-    if $dnssec {
-        exec { "dnssec-keygen-${name}":
-            command => "/usr/local/bin/dnssec-init '${cachedir}' '${name}'\
-                '${_domain}' '${key_directory}' '${random_device}'",
-            cwd     => $cachedir,
-            user    => $::bind::params::bind_user,
-            creates => "${cachedir}/${name}/${_domain}.signed",
-            timeout => 0, # crypto is hard
-            require => [
-                File['/usr/local/bin/dnssec-init'],
-                File["${cachedir}/${name}/${_domain}"]
-            ],
-        }
-
-        file { "${cachedir}/${name}/${_domain}.signed":
-            owner => $::bind::params::bind_user,
-            group => $::bind::params::bind_group,
-            mode  => '0644',
-            audit => [ content ],
+            file { "${cachedir}/${name}/${_domain}.signed":
+                owner => $::bind::params::bind_user,
+                group => $::bind::params::bind_group,
+                mode  => '0644',
+                audit => [ content ],
+            }
         }
     }
 
