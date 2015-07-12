@@ -10,10 +10,15 @@ class bind (
     $rndc            = undef,
     $statistics_port = undef,
     $random_device   = undef,
+    $custom_options  = undef,
 ) {
     include ::bind::params
 
     $auth_nxdomain = false
+
+    if ( $custom_options ) {
+        validate_hash($custom_options)
+    }
 
     File {
         ensure  => present,

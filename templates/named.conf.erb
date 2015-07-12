@@ -28,6 +28,11 @@ options {
 <%- if @version != '' -%>
 	version "<%= @version %>";
 <%- end -%>
+<%- if @custom_options -%>
+<%-   @custom_options.sort.map do |k,v| -%>
+	<%=    k %> <%= v %>;
+<%-   end -%>
+<%- end -%>
 };
 
 include "<%= @confdir %>/named.conf.local";
